@@ -1,0 +1,62 @@
+name: ios-spike
+
+# Feasibility check for poidh #1405: does llama.cpp build for the iOS simulator
+# and actually generate a completion there? Everything else in the app is ordinary
+# SwiftUI work; this is the part that decides whether the entry is possible.
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  spike:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun --sdk iphonesimulator --show-sdk-version
+
+      - name: Build llama.cpp for iOS-simulator
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch v0.7.0 https://github.com/ggml-org/llama.cpp /tmp/llama
+          cmake -S /tmp/llama -B /tmp/llama/build-sim \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_SYSROOT=iphonesimulator \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=16.0 \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_CURL=OFF -DGGML_METAL=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_TOOLS=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build /tmp/llama/build-sim --target llama -j4
+          find /tmp/llama/build-sim -name '*.a' | head -20
+
+      - name: Link the probe against the static libs
+        run: |
+          set -euo pipefail
+          SDK="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+          LIBS="$(find /tmp/llama/build-sim -name '*.a' | tr '\n' ' ')"
+          xcrun --sdk iphonesimulator clang -target arm64-apple-ios16.0-simulator \
+            -isysroot "$SDK" -O2 -std=c11 \
+            -I/tmp/llama/include -I/tmp/llama/ggml/include \
+            llm_main.c $LIBS -lc++ -framework Accelerate -o llm_probe
+          file llm_probe
+
+      - name: Fetch a small model
+        run: |
+          curl -L --fail -o model.gguf \
+            "https://huggingface.co/bartowski/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/Qwen2.5-0.5B-Instruct-Q4_K_M.gguf"
+          ls -lh model.gguf
+
+      - name: Run it inside a booted simulator
+        run: |
+          set -euo pipefail
+          DEV=$(xcrun simctl list devices available | grep -m1 'iPhone' | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')
+          echo "device=$DEV"
+          xcrun simctl boot "$DEV" || true
+          xcrun simctl bootstatus "$DEV" -b
+          time xcrun simctl spawn "$DEV" ./llm_probe model.gguf "<|im_start|>user\nSay hello in one sentence.<|im_end|>\n<|im_start|>assistant\n" | tee out.txt
+          grep -q -- '-- done --' out.txt
