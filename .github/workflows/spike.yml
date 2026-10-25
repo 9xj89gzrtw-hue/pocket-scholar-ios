@@ -58,5 +58,5 @@ jobs:
           echo "device=$DEV"
           xcrun simctl boot "$DEV" || true
           xcrun simctl bootstatus "$DEV" -b
-          time xcrun simctl spawn "$DEV" ./llm_probe model.gguf "<|im_start|>user\nSay hello in one sentence.<|im_end|>\n<|im_start|>assistant\n" | tee out.txt
+          time xcrun simctl spawn "$DEV" "$PWD/llm_probe" "$PWD/model.gguf" "<|im_start|>user\nSay hello in one sentence.<|im_end|>\n<|im_start|>assistant\n" | tee out.txt
           grep -q -- '-- done --' out.txt
